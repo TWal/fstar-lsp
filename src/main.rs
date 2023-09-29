@@ -14,7 +14,7 @@ struct FileBackendInternal {
     lax_ide: Option<fstar_ide::FStarIDE>,
     ide: fstar_ide::FStarIDE,
     text: String,
-    send_full_buffer_msg: mpsc::UnboundedSender<FullBufferMessage>,
+    send_full_buffer_msg: mpsc::UnboundedSender<IdeFullBufferMessage>,
 }
 
 struct SymbolInfo {
@@ -104,11 +104,25 @@ enum FragmentStatus {
 
 #[derive (Clone, Debug)]
 enum FullBufferMessage {
+    Started,
     FragmentStatusUpdate {
         status_type: FragmentStatus,
         range: Range,
     },
+    Finished,
     Error(fstar_ide::VerificationFailureResponse),
+}
+
+#[derive (PartialEq, Copy, Clone, Debug)]
+enum IdeType {
+    Lax,
+    Full,
+}
+
+#[derive (Clone, Debug)]
+struct IdeFullBufferMessage {
+    ide_type: IdeType,
+    message: FullBufferMessage,
 }
 
 impl FileBackend {
@@ -116,7 +130,7 @@ impl FileBackend {
         self.shared.lock()
     }
 
-    fn new(path: &str) -> (Self, mpsc::UnboundedReceiver<FullBufferMessage>) {
+    fn new(path: &str) -> (Self, mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let (send, recv) = mpsc::unbounded_channel();
         (FileBackend {
             shared: Arc::new(Mutex::new(
@@ -151,9 +165,9 @@ impl FileBackend {
         self.load_full_buffer(text).await;
     }
 
-    async fn handle_full_buffer_messages_loop(mut ch: mpsc::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<FullBufferMessage>, is_lax: bool) {
+    async fn handle_full_buffer_messages_loop(mut ch: mpsc::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
         while let Some(resp_or_msg) = ch.recv().await {
-            let opt_to_send = match resp_or_msg {
+            let opt_message = match resp_or_msg {
                 fstar_ide::ResponseOrMessage::Message(fstar_ide::Message::Progress(fstar_ide::ProgressMessageOrNull::Some(data))) => {
                     match data {
                         fstar_ide::ProgressMessage::FullBufferFragmentStarted{ranges} => {
@@ -176,14 +190,20 @@ impl FileBackend {
                         },
                         fstar_ide::ProgressMessage::FullBufferFragmentOk(fragment) => {
                             Some(FullBufferMessage::FragmentStatusUpdate {
-                                status_type: if is_lax { FragmentStatus::LaxOk } else { FragmentStatus::Ok },
+                                status_type: if ide_type == IdeType::Lax { FragmentStatus::LaxOk } else { FragmentStatus::Ok },
                                 range: fragment.ranges.into(),
                             })
+                        },
+                        fstar_ide::ProgressMessage::FullBufferStarted => {
+                            Some(FullBufferMessage::Started)
+                        },
+                        fstar_ide::ProgressMessage::FullBufferFinished => {
+                            Some(FullBufferMessage::Finished)
                         },
                         _ => None
                     }
                 }
-                fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status: fstar_ide::ResponseStatus::Failure, response}) => {
+                fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status: _, response}) => {
                     match serde_json::from_value::<fstar_ide::VerificationFailureResponse>(response) {
                         Ok(x) => Some(FullBufferMessage::Error(x)),
                         Err(e) => {
@@ -194,8 +214,11 @@ impl FileBackend {
                 }
                 _ => None
             };
-            if let Some(to_send) = opt_to_send {
-                send.send(to_send).unwrap();
+            if let Some(message) = opt_message {
+                send.send(IdeFullBufferMessage{
+                    ide_type,
+                    message,
+                }).unwrap();
             }
         }
     }
@@ -211,7 +234,7 @@ impl FileBackend {
         );
         //TODO: do something with the responses
         let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
-        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), false));
+        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
 
         let opt_ch_lax = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide|
             lax_ide.send_query(
@@ -227,7 +250,7 @@ impl FileBackend {
         match opt_ch_lax {
             None => (),
             Some(ch_lax) => {
-                tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send.clone(), true));
+                tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send.clone(), IdeType::Lax));
             }
         }
 
@@ -305,15 +328,90 @@ impl FileBackend {
     }
 }
 
+struct DiagnosticsStateMachine {
+    uri: Url,
+    client: Arc<Client>,
+    lax_diagnostics: Vec<Diagnostic>,
+    full_diagnostics: Vec<Diagnostic>,
+}
+
+impl DiagnosticsStateMachine {
+    fn new(uri: Url, client: Arc<Client>) -> Self {
+        DiagnosticsStateMachine {
+            uri,
+            client,
+            lax_diagnostics: vec![],
+            full_diagnostics: vec![],
+        }
+    }
+
+    fn get_vec_for(&mut self, ide_type: IdeType) -> &mut Vec<Diagnostic> {
+        match ide_type {
+            IdeType::Lax => &mut self.lax_diagnostics,
+            IdeType::Full => &mut self.full_diagnostics,
+        }
+    }
+
+    fn start(&mut self, ide_type: IdeType) {
+        self.get_vec_for(ide_type).clear();
+    }
+
+    fn process_error(&mut self, ide_type: IdeType, error: fstar_ide::VerificationFailureResponseItem) {
+        let severity = match error.level {
+            fstar_ide::VerificationFailureLevel::Error => DiagnosticSeverity::ERROR,
+            fstar_ide::VerificationFailureLevel::Warning => DiagnosticSeverity::WARNING,
+            fstar_ide::VerificationFailureLevel::Info => DiagnosticSeverity::INFORMATION,
+        };
+        //TODO: handle file name & other ranges
+        let diagnostic = Diagnostic {
+            range: error.ranges[0].clone().into(),
+            severity: Some(severity),
+            code: Some(NumberOrString::Number(error.number as i32)),
+            code_description: None,
+            source: None,
+            message: error.message.clone(),
+            related_information: None,
+            tags: None,
+            data: None,
+        };
+        self.get_vec_for(ide_type).push(diagnostic);
+    }
+
+    async fn finish(&self, ide_type: IdeType) {
+        let all_diagnostics: Vec<Diagnostic> =
+            self.lax_diagnostics.clone().into_iter()
+            .chain(self.full_diagnostics.clone().into_iter())
+            //TODO dedup
+            .collect()
+        ;
+        self.client.publish_diagnostics(self.uri.clone(), all_diagnostics, None).await;
+    }
+}
+
 struct Backend {
     client: Arc<Client>,
     ides: RwLock<std::collections::HashMap<String, FileBackend>>,
 }
 
 impl Backend {
-    async fn receive_full_buffer_message_loop(client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<FullBufferMessage>) {
+    async fn receive_full_buffer_message_loop(uri: Url, client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
+        let mut diagnostic_state_machine = DiagnosticsStateMachine::new(uri.clone(), client.clone());
         while let Some(msg) = recv.recv().await {
             info!("got msg {:?}", msg);
+            match msg.message {
+                FullBufferMessage::Started => {
+                    diagnostic_state_machine.start(msg.ide_type);
+                }
+                FullBufferMessage::Error(errors) => {
+                    for error in errors {
+                        diagnostic_state_machine.process_error(msg.ide_type, error);
+                    }
+                },
+                FullBufferMessage::Finished => {
+                    diagnostic_state_machine.finish(msg.ide_type).await;
+                }
+                _ => ()
+            }
         }
     }
 }
@@ -396,7 +494,7 @@ impl LanguageServer for Backend {
         let (ide, recv) = FileBackend::new(path);
         self.ides.write().unwrap().insert(path.to_string(), ide.clone());
         ide.init(&params.text_document.text).await;
-        tokio::spawn(Self::receive_full_buffer_message_loop(self.client.clone(), recv));
+        tokio::spawn(Self::receive_full_buffer_message_loop(params.text_document.uri, self.client.clone(), recv));
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {

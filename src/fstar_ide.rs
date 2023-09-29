@@ -187,12 +187,21 @@ pub struct LookupResponse {
     pub definition: Option<String>,
 }
 
+
+#[derive(Deserialize, PartialEq, Clone, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerificationFailureLevel {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 pub struct VerificationFailureResponseItem {
-    level: String, //TODO enum
-    number: u32,
-    message: String,
-    ranges: Vec<Range>,
+    pub level: VerificationFailureLevel,
+    pub number: u32,
+    pub message: String,
+    pub ranges: Vec<Range>,
 }
 
 pub type VerificationFailureResponse = Vec<VerificationFailureResponseItem>;
