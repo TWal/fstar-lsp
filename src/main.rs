@@ -1,6 +1,7 @@
 mod fstar_ide;
 mod logging;
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -394,7 +395,7 @@ impl DiagnosticsStateMachine {
         let all_diagnostics: Vec<Diagnostic> =
             self.lax_diagnostics.clone().into_iter()
             .chain(self.full_diagnostics.clone().into_iter())
-            //TODO dedup
+            .unique_by(|diag| (diag.range.start.line, diag.range.start.character, diag.range.end.line, diag.range.end.character, diag.message.clone())) // send a tuple to be able to hash
             .collect()
         ;
         self.client.publish_diagnostics(self.uri.clone(), all_diagnostics, None).await;
