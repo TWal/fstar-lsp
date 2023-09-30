@@ -1,6 +1,7 @@
 mod fstar_ide;
 mod logging;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use tower_lsp::jsonrpc::Result;
@@ -253,7 +254,19 @@ impl FileBackend {
                 tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send.clone(), IdeType::Lax));
             }
         }
+    }
 
+    async fn verify_full_buffer(&self) {
+        let text = self.lock().unwrap().text.clone();
+        let ch = self.lock().unwrap().ide.send_query(
+            fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
+                code: text,
+                kind: fstar_ide::FullBufferKind::Full,
+                with_symbols: false,
+            })
+        );
+        let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
+        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
     }
 
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
@@ -393,6 +406,12 @@ struct Backend {
     ides: RwLock<std::collections::HashMap<String, FileBackend>>,
 }
 
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct VerifyAllParams {
+    text_document: TextDocumentIdentifier,
+}
+
 impl Backend {
     async fn receive_full_buffer_message_loop(uri: Url, client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let mut diagnostic_state_machine = DiagnosticsStateMachine::new(uri.clone(), client.clone());
@@ -413,6 +432,19 @@ impl Backend {
                 _ => ()
             }
         }
+    }
+
+    async fn verify_all(&self, params: serde_json::Value) {
+        let params: VerifyAllParams = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[verify_all]: couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.verify_full_buffer().await;
     }
 }
 
@@ -579,6 +611,10 @@ async fn main() {
 
     logging::set_log_level(logging::LogLevel::Info);
     let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
-    let (service, socket) = LspService::new(|client| Backend { client: Arc::new(client), ides: RwLock::new(std::collections::HashMap::new()) });
+    let (service, socket) = LspService::build(
+        |client| Backend { client: Arc::new(client), ides: RwLock::new(std::collections::HashMap::new()) })
+        .custom_method("fstar-lsp/verifyAll", Backend::verify_all)
+        .finish()
+    ;
     Server::new(stdin, stdout, socket).serve(service).await;
 }
