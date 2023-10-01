@@ -81,6 +81,7 @@ enum HoverResultText {
         documentation: String,
     }
 }
+
 struct HoverResult {
     result: HoverResultText,
     range: Range,
@@ -95,6 +96,15 @@ struct GotoDefinitionResult {
     file: GotoDefinitionResultFile,
     range: Range,
 }
+
+#[derive (Clone, Debug)]
+struct CompleteResultItem {
+    match_length: u32,
+    annotation: String,
+    candidate: String,
+}
+
+type CompleteResult = Vec<CompleteResultItem>;
 
 #[derive (Copy, Clone, Debug)]
 enum FragmentStatus {
@@ -340,6 +350,43 @@ impl FileBackend {
         }
         Some((response, symbol.range))
     }
+
+    async fn complete(&self, pos: Position) -> Option<CompleteResult> {
+        let symbol = self.lock().unwrap().get_symbol_at(pos);
+        let Some(symbol) = symbol else {
+            return None
+        };
+        let mut ch = self.lock().unwrap().get_flycheck_ide().send_query(
+            fstar_ide::Query::AutoComplete(fstar_ide::AutoCompleteQuery {
+                context: fstar_ide::AutoCompleteContext::Code,
+                partial_symbol: symbol.symbol,
+            })
+        );
+        let resp_or_msg = ch.recv().await;
+
+        let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg
+        else {
+            error!("[complete] expected a response, got {:?}", resp_or_msg);
+            return None
+        };
+        if status != fstar_ide::ResponseStatus::Success {
+            return None
+        }
+        match serde_json::from_value::<fstar_ide::AutoCompleteResponse>(response) {
+            Ok(response) => {
+                Some(
+                    response.into_iter()
+                        .map(|fstar_ide::AutoCompleteResponseItem(match_length, annotation, candidate)| CompleteResultItem {match_length, annotation, candidate})
+                        .filter(|cri| cri.annotation != "<search term>")
+                        .collect()
+                )
+            }
+            Err(err) => {
+                error!("[complete] couldn't parse response: {}", err);
+                return None
+            }
+        }
+    }
 }
 
 struct DiagnosticsStateMachine {
@@ -548,11 +595,30 @@ impl LanguageServer for Backend {
         let _ = self.ides.write().unwrap().remove(path);
     }
 
-    async fn completion(&self, _: CompletionParams) -> Result<Option<CompletionResponse>> {
-        Ok(Some(CompletionResponse::Array(vec![
-            CompletionItem::new_simple("Hello".to_string(), "Some detail".to_string()),
-            CompletionItem::new_simple("Bye".to_string(), "More detail".to_string()),
-        ])))
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let path = params.text_document_position.text_document.uri.path();
+        let pos = params.text_document_position.position;
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        match ide.complete(pos).await {
+            None => Ok(None),
+            Some(completion_result) => {
+                Ok(Some(CompletionResponse::Array(
+                    completion_result.into_iter()
+                        .map(|item|
+                            CompletionItem {
+                                label: item.candidate,
+                                label_details: Some(CompletionItemLabelDetails {
+                                    detail: Some(item.annotation),
+                                    description: None,
+                                }),
+                                kind: Some(CompletionItemKind::FUNCTION),
+                                ..Default::default()
+                            }
+                        )
+                        .collect()
+                )))
+            }
+        }
     }
 
     async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {

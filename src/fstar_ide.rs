@@ -28,8 +28,8 @@ pub enum Query {
     Pop{},
     Push(PushQuery),
     VfsAdd(VfsAddQuery),
-    // Voluntary bad camelCase to serialize into "autocomplete" and not "auto-complete"
-    Autocomplete(AutoCompleteQuery),
+    #[serde(rename = "autocomplete")]
+    AutoComplete(AutoCompleteQuery),
     Lookup(LookupQuery),
     Compute(ComputeQuery),
     Search(String),
@@ -187,6 +187,14 @@ pub struct LookupResponse {
     pub definition: Option<String>,
 }
 
+#[derive(Deserialize, PartialEq, Clone, Debug)]
+pub struct AutoCompleteResponseItem (
+    pub u32, // match_length
+    pub String, // annotation
+    pub String, // candidate
+);
+
+pub type AutoCompleteResponse = Vec<AutoCompleteResponseItem>;
 
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
