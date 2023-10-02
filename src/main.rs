@@ -463,7 +463,9 @@ struct VerifyAllParams {
 
 struct ClearStatusNotification {}
 #[derive(Serialize, Deserialize)]
-struct ClearStatusNotificationParams {}
+struct ClearStatusNotificationParams {
+    uri: Url,
+}
 
 impl Notification for ClearStatusNotification {
     type Params = ClearStatusNotificationParams;
@@ -474,6 +476,7 @@ struct SetStatusNotification {}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetStatusNotificationParams {
+    uri: Url,
     status_type: FragmentStatus,
     range: Range,
 }
@@ -509,10 +512,13 @@ impl Backend {
             if msg.ide_type == IdeType::Full {
                 match msg.message {
                     FullBufferMessage::Started => {
-                        client.send_notification::<ClearStatusNotification>(ClearStatusNotificationParams{}).await;
+                        client.send_notification::<ClearStatusNotification>(ClearStatusNotificationParams{
+                            uri: uri.clone(),
+                        }).await;
                     }
                     FullBufferMessage::FragmentStatusUpdate { status_type, range } => {
                         client.send_notification::<SetStatusNotification>(SetStatusNotificationParams {
+                            uri: uri.clone(),
                             status_type,
                             range,
                         }).await;
