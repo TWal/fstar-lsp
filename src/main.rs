@@ -1,6 +1,7 @@
 mod fstar_ide;
 mod logging;
 
+use crate::notification::Notification;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -106,7 +107,7 @@ struct CompleteResultItem {
 
 type CompleteResult = Vec<CompleteResultItem>;
 
-#[derive (Copy, Clone, Debug)]
+#[derive (Copy, Clone, Debug, Serialize, Deserialize)]
 enum FragmentStatus {
     InProgress,
     LaxOk,
@@ -460,12 +461,36 @@ struct VerifyAllParams {
     text_document: TextDocumentIdentifier,
 }
 
+struct ClearStatusNotification {}
+#[derive(Serialize, Deserialize)]
+struct ClearStatusNotificationParams {}
+
+impl Notification for ClearStatusNotification {
+    type Params = ClearStatusNotificationParams;
+    const METHOD: &'static str = "fstar-lsp/clearStatus";
+}
+
+struct SetStatusNotification {}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetStatusNotificationParams {
+    status_type: FragmentStatus,
+    range: Range,
+}
+
+impl Notification for SetStatusNotification {
+    type Params = SetStatusNotificationParams;
+    const METHOD: &'static str = "fstar-lsp/setStatus";
+}
+
+
 impl Backend {
     async fn receive_full_buffer_message_loop(uri: Url, client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let mut diagnostic_state_machine = DiagnosticsStateMachine::new(uri.clone(), client.clone());
         while let Some(msg) = recv.recv().await {
             info!("got msg {:?}", msg);
-            match msg.message {
+            // Handle diagnostics
+            match msg.message.clone() {
                 FullBufferMessage::Started => {
                     diagnostic_state_machine.start(msg.ide_type);
                 }
@@ -478,6 +503,22 @@ impl Backend {
                     diagnostic_state_machine.finish(msg.ide_type).await;
                 }
                 _ => ()
+            }
+
+            // Handle verification status
+            if msg.ide_type == IdeType::Full {
+                match msg.message {
+                    FullBufferMessage::Started => {
+                        client.send_notification::<ClearStatusNotification>(ClearStatusNotificationParams{}).await;
+                    }
+                    FullBufferMessage::FragmentStatusUpdate { status_type, range } => {
+                        client.send_notification::<SetStatusNotification>(SetStatusNotificationParams {
+                            status_type,
+                            range,
+                        }).await;
+                    }
+                    _ => ()
+                }
             }
         }
     }
