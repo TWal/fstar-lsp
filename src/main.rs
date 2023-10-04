@@ -281,6 +281,11 @@ impl FileBackend {
         tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
     }
 
+    async fn cancel_all(&self) {
+        let _ch = self.lock().unwrap().ide.send_query(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
+        // the Cancel query doesn't send back any message -- ignore
+    }
+
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
         let (response, range) = self.lookup_query(vec![fstar_ide::LookupRequest::Type], pos).await?;
         let response_type = match response.type_ {
@@ -461,6 +466,12 @@ struct VerifyAllParams {
     text_document: TextDocumentIdentifier,
 }
 
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CancelAllParams {
+    text_document: TextDocumentIdentifier,
+}
+
 struct ClearStatusNotification {}
 #[derive(Serialize, Deserialize)]
 struct ClearStatusNotificationParams {
@@ -540,6 +551,21 @@ impl Backend {
         let path = params.text_document.uri.path();
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         ide.verify_full_buffer().await;
+    }
+
+    async fn cancel_all(&self, params: serde_json::Value) {
+        let params: CancelAllParams = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[cancel_all]: couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.cancel_all().await;
+        let text = ide.lock().unwrap().text.clone();
+        ide.load_full_buffer(&text).await;
     }
 }
 
@@ -728,6 +754,7 @@ async fn main() {
     let (service, socket) = LspService::build(
         |client| Backend { client: Arc::new(client), ides: RwLock::new(std::collections::HashMap::new()) })
         .custom_method("fstar-lsp/verifyAll", Backend::verify_all)
+        .custom_method("fstar-lsp/cancelAll", Backend::cancel_all)
         .finish()
     ;
     Server::new(stdin, stdout, socket).serve(service).await;

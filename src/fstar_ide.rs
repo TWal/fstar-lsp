@@ -36,7 +36,10 @@ pub enum Query {
     FullBuffer(FullBufferQuery),
     Format(String),
     RestartSolver{},
-    Cancel(Option<Position>),
+    // In F*'s code, it looks like it is a Option<CancelPosition>.
+    // However, the parsing code doesn't handle the "None" case.
+    // Hence, here it is simply a "CancelPosition" (enforcing it to be a "Some")
+    Cancel(CancelPosition),
 }
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
@@ -142,6 +145,14 @@ pub struct Position {
     pub line: u32,
     pub column: u32,
 }
+
+#[derive(Serialize, PartialEq, Clone, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub struct CancelPosition {
+    pub cancel_line: u32,
+    pub cancel_column: u32,
+}
+
 
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 pub struct FullResponseOrMessage {
