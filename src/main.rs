@@ -1,5 +1,6 @@
 mod fstar_ide;
 mod logging;
+mod sync_channel;
 
 use crate::notification::Notification;
 use itertools::Itertools;
@@ -165,11 +166,11 @@ impl FileBackend {
                 contents: text.to_string(),
             })
         ;
-        let mut ch = self.lock().unwrap().ide.send_query(query.clone());
+        let mut ch = self.lock().unwrap().ide.send_query_nosync(query.clone());
         //TODO: check the response?
         while let Some(_) = ch.recv().await {}
 
-        let opt_ch = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide| lax_ide.send_query(query));
+        let opt_ch = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide| lax_ide.send_query_nosync(query));
 
         if let Some(mut ch) = opt_ch {
             while let Some(_) = ch.recv().await {}
@@ -178,8 +179,8 @@ impl FileBackend {
         self.load_full_buffer(text).await;
     }
 
-    async fn handle_full_buffer_messages_loop(mut ch: mpsc::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
-        while let Some(resp_or_msg) = ch.recv().await {
+    async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
+        while let Some((resp_or_msg, acker)) = ch.recv().await {
             let opt_message = match resp_or_msg {
                 fstar_ide::ResponseOrMessage::Message(fstar_ide::Message::Progress(fstar_ide::ProgressMessageOrNull::Some(data))) => {
                     match data {
@@ -233,12 +234,13 @@ impl FileBackend {
                     message,
                 }).unwrap();
             }
+            acker.ack();
         }
     }
 
     async fn load_full_buffer(&self, text: &str) {
         self.lock().unwrap().text = text.to_string();
-        let ch = self.lock().unwrap().ide.send_query(
+        let ch = self.lock().unwrap().ide.send_query_sync(
             fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
                 code: text.to_string(),
                 kind: fstar_ide::FullBufferKind::Cache,
@@ -250,7 +252,7 @@ impl FileBackend {
         tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
 
         let opt_ch_lax = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide|
-            lax_ide.send_query(
+            lax_ide.send_query_sync(
                 fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
                     code: text.to_string(),
                     kind: fstar_ide::FullBufferKind::Full,
@@ -270,7 +272,7 @@ impl FileBackend {
 
     async fn verify_full_buffer(&self) {
         let text = self.lock().unwrap().text.clone();
-        let ch = self.lock().unwrap().ide.send_query(
+        let ch = self.lock().unwrap().ide.send_query_sync(
             fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
                 code: text,
                 kind: fstar_ide::FullBufferKind::Full,
@@ -282,7 +284,7 @@ impl FileBackend {
     }
 
     async fn cancel_all(&self) {
-        let _ch = self.lock().unwrap().ide.send_query(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
+        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
         // the Cancel query doesn't send back any message -- ignore
     }
 
@@ -330,7 +332,7 @@ impl FileBackend {
             return None
         };
         let path = self.lock().unwrap().path.clone();
-        let mut ch = self.lock().unwrap().get_flycheck_ide().send_query(
+        let mut ch = self.lock().unwrap().get_flycheck_ide().send_query_nosync(
             fstar_ide::Query::Lookup(fstar_ide::LookupQuery {
                 context: fstar_ide::LookupContext::Code,
                 symbol: symbol.symbol.clone(),
@@ -362,7 +364,7 @@ impl FileBackend {
         let Some(symbol) = symbol else {
             return None
         };
-        let mut ch = self.lock().unwrap().get_flycheck_ide().send_query(
+        let mut ch = self.lock().unwrap().get_flycheck_ide().send_query_nosync(
             fstar_ide::Query::AutoComplete(fstar_ide::AutoCompleteQuery {
                 context: fstar_ide::AutoCompleteContext::Code,
                 partial_symbol: symbol.symbol,

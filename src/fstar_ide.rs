@@ -8,6 +8,7 @@ use std::ffi::OsStr;
 use std::sync::{Arc, Mutex};
 use crate::{log, info, warning, error};
 use anyhow::Result;
+use crate::sync_channel;
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 pub struct FullQuery {
@@ -400,10 +401,30 @@ impl LastMessageDecider {
     }
 }
 
+#[derive (Clone)]
+enum FStarIDESender {
+    NoSync(mpsc::Sender<ResponseOrMessage>),
+    Sync(sync_channel::Sender<ResponseOrMessage>),
+}
+
+impl FStarIDESender {
+    async fn send(&self, x: ResponseOrMessage) -> Result<()> {
+        match self {
+            FStarIDESender::NoSync(send) => {
+                send.send(x).await?;
+                Ok(())
+            }
+            FStarIDESender::Sync(send) => {
+                send.send(x).await
+            }
+        }
+    }
+}
+
 pub struct FStarIDE {
     send: bare::Sender,
     current_query_id: u64,
-    channels: Arc<Mutex<std::collections::HashMap<String, (mpsc::Sender<ResponseOrMessage>, LastMessageDecider)>>>,
+    channels: Arc<Mutex<std::collections::HashMap<String, (FStarIDESender, LastMessageDecider)>>>,
 }
 
 impl FStarIDE {
@@ -422,7 +443,19 @@ impl FStarIDE {
         }
     }
 
-    pub fn send_query(&mut self, query: Query) -> mpsc::Receiver<ResponseOrMessage> {
+    pub fn send_query_nosync(&mut self, query: Query) -> mpsc::Receiver<ResponseOrMessage> {
+        let (send, recv) = mpsc::channel(100);
+        self.send_query_internal(query, FStarIDESender::NoSync(send));
+        recv
+    }
+
+    pub fn send_query_sync(&mut self, query: Query) -> sync_channel::Receiver<ResponseOrMessage> {
+        let (send, recv) = sync_channel::channel();
+        self.send_query_internal(query, FStarIDESender::Sync(send));
+        recv
+    }
+
+    fn send_query_internal(&mut self, query: Query, send: FStarIDESender) {
         let query_id = self.current_query_id.to_string();
         self.current_query_id += 1;
         let last_message_decider = LastMessageDecider::new(&query);
@@ -431,9 +464,7 @@ impl FStarIDE {
             query,
         };
         self.send.send(full_query).unwrap();
-        let (send, recv) = mpsc::channel(100);
         self.channels.lock().unwrap().insert(query_id, (send, last_message_decider));
-        recv
     }
 
     fn normalize_query_id(query_id: &str) -> &str {
@@ -443,7 +474,7 @@ impl FStarIDE {
         }
     }
 
-    async fn receive_loop(mut recv: bare::Receiver, channels: Arc<Mutex<std::collections::HashMap<String, (mpsc::Sender<ResponseOrMessage>, LastMessageDecider)>>>,) -> Result<()> {
+    async fn receive_loop(mut recv: bare::Receiver, channels: Arc<Mutex<std::collections::HashMap<String, (FStarIDESender, LastMessageDecider)>>>,) -> Result<()> {
         while let Some(data) = recv.recv().await {
             let opt_send = channels.lock().unwrap().get(Self::normalize_query_id(&data.query_id)).cloned();
             if let Some((send, last_message_decider)) = opt_send {
