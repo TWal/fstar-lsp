@@ -108,21 +108,25 @@ struct CompleteResultItem {
 
 type CompleteResult = Vec<CompleteResultItem>;
 
-#[derive (Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive (PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
 enum FragmentStatus {
     InProgress,
     LaxOk,
     Ok,
     Failed,
+    Canceled,
+}
+
+#[derive (Clone, Debug)]
+struct FragmentStatusUpdate {
+    status_type: FragmentStatus,
+    range: Range,
 }
 
 #[derive (Clone, Debug)]
 enum FullBufferMessage {
     Started,
-    FragmentStatusUpdate {
-        status_type: FragmentStatus,
-        range: Range,
-    },
+    FragmentStatusUpdate(FragmentStatusUpdate),
     Finished,
     Error(fstar_ide::VerificationFailureResponse),
 }
@@ -185,28 +189,28 @@ impl FileBackend {
                 fstar_ide::ResponseOrMessage::Message(fstar_ide::Message::Progress(fstar_ide::ProgressMessageOrNull::Some(data))) => {
                     match data {
                         fstar_ide::ProgressMessage::FullBufferFragmentStarted{ranges} => {
-                            Some(FullBufferMessage::FragmentStatusUpdate {
+                            Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::InProgress,
                                 range: ranges.into(),
-                            })
+                            }))
                         },
                         fstar_ide::ProgressMessage::FullBufferFragmentFailed{ranges} => {
-                            Some(FullBufferMessage::FragmentStatusUpdate {
+                            Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::Failed,
                                 range: ranges.into(),
-                            })
+                            }))
                         },
                         fstar_ide::ProgressMessage::FullBufferFragmentLaxOk(fragment) => {
-                            Some(FullBufferMessage::FragmentStatusUpdate {
+                            Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::LaxOk,
                                 range: fragment.ranges.into(),
-                            })
+                            }))
                         },
                         fstar_ide::ProgressMessage::FullBufferFragmentOk(fragment) => {
-                            Some(FullBufferMessage::FragmentStatusUpdate {
+                            Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: if ide_type == IdeType::Lax { FragmentStatus::LaxOk } else { FragmentStatus::Ok },
                                 range: fragment.ranges.into(),
-                            })
+                            }))
                         },
                         fstar_ide::ProgressMessage::FullBufferStarted => {
                             Some(FullBufferMessage::Started)
@@ -457,6 +461,51 @@ impl DiagnosticsStateMachine {
     }
 }
 
+struct StatusStateMachine {
+    uri: Url,
+    client: Arc<Client>,
+    last_status: Option<FragmentStatusUpdate>,
+}
+
+impl StatusStateMachine {
+    fn new(uri: Url, client: Arc<Client>) -> Self {
+        StatusStateMachine {
+            uri,
+            client,
+            last_status: None,
+        }
+    }
+
+    async fn start(&mut self) {
+        self.last_status = None;
+        self.client.send_notification::<ClearStatusNotification>(ClearStatusNotificationParams{
+            uri: self.uri.clone(),
+        }).await;
+    }
+
+    async fn process_fragment_status_update(&mut self, msg: FragmentStatusUpdate) {
+        self.client.send_notification::<SetStatusNotification>(SetStatusNotificationParams {
+            uri: self.uri.clone(),
+            status_type: msg.status_type,
+            range: msg.range,
+        }).await;
+        self.last_status = Some(msg)
+    }
+
+    async fn finish(&self) {
+        if let Some(last_status) = &self.last_status {
+            if last_status.status_type == FragmentStatus::InProgress {
+                self.client.send_notification::<SetStatusNotification>(SetStatusNotificationParams {
+                    uri: self.uri.clone(),
+                    status_type: FragmentStatus::Canceled,
+                    range: last_status.range,
+                }).await;
+            }
+        }
+    }
+}
+
+
 struct Backend {
     client: Arc<Client>,
     ides: RwLock<std::collections::HashMap<String, FileBackend>>,
@@ -503,6 +552,8 @@ impl Notification for SetStatusNotification {
 impl Backend {
     async fn receive_full_buffer_message_loop(uri: Url, client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let mut diagnostic_state_machine = DiagnosticsStateMachine::new(uri.clone(), client.clone());
+        let mut status_state_machine = StatusStateMachine::new(uri.clone(), client.clone());
+
         while let Some(msg) = recv.recv().await {
             info!("got msg {:?}", msg);
             // Handle diagnostics
@@ -525,16 +576,13 @@ impl Backend {
             if msg.ide_type == IdeType::Full {
                 match msg.message {
                     FullBufferMessage::Started => {
-                        client.send_notification::<ClearStatusNotification>(ClearStatusNotificationParams{
-                            uri: uri.clone(),
-                        }).await;
+                        status_state_machine.start().await
                     }
-                    FullBufferMessage::FragmentStatusUpdate { status_type, range } => {
-                        client.send_notification::<SetStatusNotification>(SetStatusNotificationParams {
-                            uri: uri.clone(),
-                            status_type,
-                            range,
-                        }).await;
+                    FullBufferMessage::FragmentStatusUpdate(upd) => {
+                        status_state_machine.process_fragment_status_update(upd).await;
+                    }
+                    FullBufferMessage::Finished => {
+                        status_state_machine.finish().await;
                     }
                     _ => ()
                 }
@@ -566,8 +614,6 @@ impl Backend {
         let path = params.text_document.uri.path();
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         ide.cancel_all().await;
-        let text = ide.lock().unwrap().text.clone();
-        ide.load_full_buffer(&text).await;
     }
 }
 
