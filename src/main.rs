@@ -164,7 +164,7 @@ impl FileBackend {
     }
 
     async fn init(&self, text: &str) {
-        let query = 
+        let query =
             fstar_ide::Query::VfsAdd(fstar_ide::VfsAddQuery{
                 filename: None,
                 contents: text.to_string(),

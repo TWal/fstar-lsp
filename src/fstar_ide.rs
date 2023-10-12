@@ -77,7 +77,7 @@ pub enum AutoCompleteContext {
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 pub struct AutoCompleteQuery {
-    #[serde(rename = "partial-symbol")] 
+    #[serde(rename = "partial-symbol")]
     pub partial_symbol: String,
     pub context: AutoCompleteContext,
 }
@@ -108,7 +108,7 @@ pub enum LookupRequest {
 pub struct LookupQuery {
     pub context: LookupContext,
     pub symbol: String,
-    #[serde(rename = "requested-info")] 
+    #[serde(rename = "requested-info")]
     pub requested_info: Vec<LookupRequest>,
     pub location: Option<Position>
     //symbol-range: arbitrary json data that is echoed back in the response, for some reason?
@@ -136,7 +136,7 @@ pub enum FullBufferKind {
 pub struct FullBufferQuery {
     pub code: String,
     pub kind: FullBufferKind,
-    #[serde(rename = "with-symbols")] 
+    #[serde(rename = "with-symbols")]
     pub with_symbols: bool,
 }
 
@@ -191,9 +191,9 @@ pub struct Response {
 pub struct LookupResponse {
     pub kind: String, //TODO: this is an enum?
     pub name: String,
-    #[serde(rename = "defined-at")] 
+    #[serde(rename = "defined-at")]
     pub defined_at: Option<Range>,
-    #[serde(rename = "type")] 
+    #[serde(rename = "type")]
     pub type_: Option<String>,
     pub documentation: Option<String>,
     pub definition: Option<String>,
@@ -264,7 +264,7 @@ pub enum ProgressMessageOrNull {
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 pub struct FullBufferFragmentOk {
     pub ranges: Range,
-    #[serde(rename = "code-fragment")] 
+    #[serde(rename = "code-fragment")]
     pub code_fragment: CodeFragment,
 }
 
@@ -278,7 +278,7 @@ pub struct Range {
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 pub struct CodeFragment {
     pub range: Range,
-    #[serde(rename = "code-digest")] 
+    #[serde(rename = "code-digest")]
     pub code_digest: String,
 }
 

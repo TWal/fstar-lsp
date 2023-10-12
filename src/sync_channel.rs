@@ -30,7 +30,6 @@ impl<T> Receiver<T> {
         self.receiver.recv().await.map(|(res, sender)| {
             (res, Ack{  sender })
         })
-        
     }
 }
 
