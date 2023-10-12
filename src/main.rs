@@ -26,12 +26,75 @@ struct SymbolInfo {
     range: Range,
 }
 
+#[derive (Deserialize)]
+struct Config {
+    fstar_exe: Option<String>,
+    options: Option<Vec<String>>,
+    include_dirs: Option<Vec<String>>,
+    cwd: Option<String>,
+}
+
+fn find_config_file(path: &str) -> Option<Config> {
+    let base_directory_path = std::path::Path::new(path).parent()?;
+    for dir in base_directory_path.ancestors() {
+        if let Ok(dir_content) = std::fs::read_dir(dir) {
+            for entry in dir_content {
+                if let Ok(entry) = entry {
+                    if let Some(file_name) = entry.file_name().to_str() {
+                        if file_name.ends_with(".fst.config.json") {
+                            match std::fs::read_to_string(entry.path()) {
+                                Err(e) => {
+                                    error!("Found config file {} but could not read it: {}", entry.path().display(), e);
+                                    return None
+                                },
+                                Ok(contents) => {
+                                    match serde_json::from_str::<Config>(&contents) {
+                                        Err(e) => {
+                                            error!("Found config file {} but could not parse it: {}", entry.path().display(), e);
+                                            return None;
+                                        }
+                                        Ok(config) => {
+                                            return Some(config);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 impl FileBackendInternal {
     fn new(path: &str, send_full_buffer_msg: mpsc::UnboundedSender<IdeFullBufferMessage>) -> Self {
+        let config = find_config_file(path);
+        let additional_options: Vec<&str> = match &config {
+            None => vec![],
+            Some(config) => {
+                let options: Vec<&str> = match &config.options {
+                    None => vec![],
+                    Some(opts) => opts.iter().map(|opt| opt.as_str()).collect(),
+                };
+                let includes: Vec<&str> = match &config.include_dirs {
+                    None => vec![],
+                    Some(include_dirs) => {
+                        include_dirs
+                            .iter()
+                            .flat_map(|include_dir| vec!["--include", include_dir.as_str()].into_iter())
+                            .collect()
+                    },
+                };
+                [options, includes].concat()
+            },
+        };
+
         FileBackendInternal {
             path: path.to_string(),
-            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", vec![path, "--admit_smt_queries", "true"])),
-            ide: fstar_ide::FStarIDE::new("fstar.exe", vec![path]),
+            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat())),
+            ide: fstar_ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat()),
             text: String::from(""),
             send_full_buffer_msg,
         }
