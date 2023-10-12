@@ -27,6 +27,16 @@ struct SymbolInfo {
 }
 
 impl FileBackendInternal {
+    fn new(path: &str, send_full_buffer_msg: mpsc::UnboundedSender<IdeFullBufferMessage>) -> Self {
+        FileBackendInternal {
+            path: path.to_string(),
+            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", vec![path, "--admit_smt_queries", "true"])),
+            ide: fstar_ide::FStarIDE::new("fstar.exe", vec![path]),
+            text: String::from(""),
+            send_full_buffer_msg,
+        }
+    }
+
     fn get_symbol_at(&self, pos: Position) -> Option<SymbolInfo> {
         let line = self.text.lines().skip(pos.line as usize).next().unwrap();
         let mut range = None;
@@ -151,15 +161,7 @@ impl FileBackend {
     fn new(path: &str) -> (Self, mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let (send, recv) = mpsc::unbounded_channel();
         (FileBackend {
-            shared: Arc::new(Mutex::new(
-                FileBackendInternal {
-                    path: path.to_string(),
-                    lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", vec![path, "--admit_smt_queries", "true"])),
-                    ide: fstar_ide::FStarIDE::new("fstar.exe", vec![path]),
-                    text: String::from(""),
-                    send_full_buffer_msg: send,
-                }
-            )),
+            shared: Arc::new(Mutex::new( FileBackendInternal::new(path, send))),
         }, recv)
     }
 
