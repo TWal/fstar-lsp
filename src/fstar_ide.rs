@@ -275,6 +275,12 @@ pub struct Range {
     pub end: (u32, u32),
 }
 
+impl std::fmt::Display for Range {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}({},{}-{},{})", self.fname, self.beg.0, self.beg.1, self.end.0, self.end.1)
+    }
+}
+
 #[derive(Deserialize, PartialEq, Clone, Debug)]
 pub struct CodeFragment {
     pub range: Range,

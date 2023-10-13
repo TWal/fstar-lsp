@@ -510,14 +510,30 @@ impl DiagnosticsStateMachine {
             fstar_ide::VerificationFailureLevel::Warning => DiagnosticSeverity::WARNING,
             fstar_ide::VerificationFailureLevel::Info => DiagnosticSeverity::INFORMATION,
         };
-        //TODO: handle file name & other ranges
+        let (range, message) = {
+            let range0 = &error.ranges[0];
+            if range0.fname == "<input>" {
+                (range0.clone().into(), error.message.clone())
+            } else {
+                (Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 0 },
+                },
+                format!("In dependency {}: {}", range0, error.message))
+            }
+        };
+        let message = vec![message].into_iter().chain(
+            error.ranges.iter()
+            .skip(1)
+            .map(|x| format!("See also: {}", x))
+        ).collect::<Vec<String>>().join("\n");
         let diagnostic = Diagnostic {
-            range: error.ranges[0].clone().into(),
+            range,
             severity: Some(severity),
             code: Some(NumberOrString::Number(error.number as i32)),
             code_description: None,
             source: None,
-            message: error.message.clone(),
+            message,
             related_information: None,
             tags: None,
             data: None,
