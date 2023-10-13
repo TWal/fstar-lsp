@@ -34,7 +34,7 @@ struct Config {
     cwd: Option<String>,
 }
 
-fn find_config_file(path: &str) -> Option<Config> {
+fn find_config_file(path: &str) -> Option<(Config, std::path::PathBuf)> {
     let base_directory_path = std::path::Path::new(path).parent()?;
     for dir in base_directory_path.ancestors() {
         if let Ok(dir_content) = std::fs::read_dir(dir) {
@@ -54,7 +54,7 @@ fn find_config_file(path: &str) -> Option<Config> {
                                             return None;
                                         }
                                         Ok(config) => {
-                                            return Some(config);
+                                            return Some((config, dir.to_path_buf()));
                                         }
                                     }
                                 }
@@ -71,9 +71,9 @@ fn find_config_file(path: &str) -> Option<Config> {
 impl FileBackendInternal {
     fn new(path: &str, send_full_buffer_msg: mpsc::UnboundedSender<IdeFullBufferMessage>) -> Self {
         let config = find_config_file(path);
-        let additional_options: Vec<&str> = match &config {
+        let additional_options = match &config {
             None => vec![],
-            Some(config) => {
+            Some((config, _)) => {
                 let options: Vec<&str> = match &config.options {
                     None => vec![],
                     Some(opts) => opts.iter().map(|opt| opt.as_str()).collect(),
@@ -90,11 +90,21 @@ impl FileBackendInternal {
                 [options, includes].concat()
             },
         };
+        let working_dir = match &config {
+            None => std::path::Path::new(path).parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+            Some((config, config_dir)) => {
+                let config_dir = config_dir.clone();
+                match &config.cwd {
+                    None => config_dir,
+                    Some(cwd) => config_dir.as_path().join(std::path::Path::new(cwd.as_str()))
+                }
+            },
+        };
 
         FileBackendInternal {
             path: path.to_string(),
-            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat())),
-            ide: fstar_ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat()),
+            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat(), working_dir.as_path())),
+            ide: fstar_ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat(), working_dir.as_path()),
             text: String::from(""),
             send_full_buffer_msg,
         }

@@ -299,7 +299,7 @@ pub mod bare {
         recv: mpsc::UnboundedReceiver<FullResponseOrMessage>,
     }
 
-    pub fn channel<S, I>(path_to_fstar_exe: S, args: I) -> (Sender, Receiver)
+    pub fn channel<S, I>(path_to_fstar_exe: S, args: I, cwd: &std::path::Path) -> (Sender, Receiver)
     where
         S: AsRef<OsStr>,
         I: IntoIterator<Item = S>,
@@ -307,6 +307,7 @@ pub mod bare {
         let mut child = process::Command::new(path_to_fstar_exe)
             .arg("--ide")
             .args(args)
+            .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
@@ -428,12 +429,12 @@ pub struct FStarIDE {
 }
 
 impl FStarIDE {
-    pub fn new<S, I>(path_to_fstar_exe: S, args: I) -> Self
+    pub fn new<S, I>(path_to_fstar_exe: S, args: I, cwd: &std::path::Path) -> Self
     where
         S: AsRef<OsStr>,
         I: IntoIterator<Item = S>,
     {
-        let (send, recv) = bare::channel(path_to_fstar_exe, args);
+        let (send, recv) = bare::channel(path_to_fstar_exe, args, cwd);
         let channels = Arc::new(Mutex::new(std::collections::HashMap::new()));
         tokio::spawn(Self::receive_loop(recv, channels.clone()));
         FStarIDE {
