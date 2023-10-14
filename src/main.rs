@@ -255,7 +255,7 @@ impl FileBackend {
             while let Some(_) = ch.recv().await {}
         }
 
-        self.load_full_buffer(text).await;
+        self.load_full_buffer(text);
     }
 
     async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
@@ -317,49 +317,43 @@ impl FileBackend {
         }
     }
 
-    async fn load_full_buffer(&self, text: &str) {
-        self.lock().unwrap().text = text.to_string();
-        let ch = self.lock().unwrap().ide.send_query_sync(
+    fn send_full_buffer_query(&self, ide_type: IdeType, kind: fstar_ide::FullBufferKind) {
+        let code = self.lock().unwrap().text.clone();
+        let full_buffer_message = 
             fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
-                code: text.to_string(),
-                kind: fstar_ide::FullBufferKind::Cache,
+                code,
+                kind,
                 with_symbols: false,
             })
-        );
-        //TODO: do something with the responses
-        let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
-        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send, IdeType::Full));
+        ;
 
-        let opt_ch_lax = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide|
-            lax_ide.send_query_sync(
-                fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
-                    code: text.to_string(),
-                    kind: fstar_ide::FullBufferKind::Full,
-                    with_symbols: false,
-                })
-            )
-        );
+        let opt_ch = match ide_type {
+            IdeType::Full => {
+                Some(self.lock().unwrap().ide.send_query_sync(full_buffer_message))
+            },
+            IdeType::Lax => {
+                self.lock().unwrap().lax_ide.as_mut().map(|lax_ide| lax_ide.send_query_sync(full_buffer_message))
+            },
+        };
 
-        let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
-        match opt_ch_lax {
+        match opt_ch {
             None => (),
-            Some(ch_lax) => {
-                tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send, IdeType::Lax));
+            Some(ch) => {
+                let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
+                tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send, ide_type));
             }
         }
     }
 
+    fn load_full_buffer(&self, text: &str) {
+        self.lock().unwrap().text = text.to_string();
+
+        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Cache);
+        self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::Full);
+    }
+
     async fn verify_full_buffer(&self) {
-        let text = self.lock().unwrap().text.clone();
-        let ch = self.lock().unwrap().ide.send_query_sync(
-            fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
-                code: text,
-                kind: fstar_ide::FullBufferKind::Full,
-                with_symbols: false,
-            })
-        );
-        let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
-        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
+        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Full);
     }
 
     async fn cancel_all(&self) {
@@ -796,7 +790,7 @@ impl LanguageServer for Backend {
         let path = params.text_document.uri.path();
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         let new_text = &params.content_changes[0].text;
-        ide.load_full_buffer(new_text).await;
+        ide.load_full_buffer(new_text);
     }
 
     async fn did_save(&self, _: DidSaveTextDocumentParams) {
