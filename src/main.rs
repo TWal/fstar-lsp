@@ -328,7 +328,7 @@ impl FileBackend {
         );
         //TODO: do something with the responses
         let msg_send = self.lock().unwrap().send_full_buffer_msg.clone();
-        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send.clone(), IdeType::Full));
+        tokio::spawn(Self::handle_full_buffer_messages_loop(ch, msg_send, IdeType::Full));
 
         let opt_ch_lax = self.lock().unwrap().lax_ide.as_mut().map(|lax_ide|
             lax_ide.send_query_sync(
@@ -344,7 +344,7 @@ impl FileBackend {
         match opt_ch_lax {
             None => (),
             Some(ch_lax) => {
-                tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send.clone(), IdeType::Lax));
+                tokio::spawn(Self::handle_full_buffer_messages_loop(ch_lax, msg_send, IdeType::Lax));
             }
         }
     }
