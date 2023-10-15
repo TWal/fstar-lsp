@@ -123,28 +123,37 @@ pub struct ComputeQuery {
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
+#[serde(tag = "kind", content = "to-position")]
 pub enum FullBufferKind {
     Full,
     Lax,
     Cache,
     ReloadDeps,
-    VerifyToPosition(Position),
-    LaxToPosition(Position),
+    VerifyToPosition(BarePosition),
+    LaxToPosition(BarePosition),
 }
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 pub struct FullBufferQuery {
     pub code: String,
+    #[serde(flatten)]
     pub kind: FullBufferKind,
     #[serde(rename = "with-symbols")]
     pub with_symbols: bool,
 }
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
-pub struct Position {
-    pub filename: String,
+pub struct BarePosition {
     pub line: u32,
     pub column: u32,
+}
+
+
+#[derive(Serialize, PartialEq, Clone, Debug)]
+pub struct Position {
+    pub filename: String,
+    #[serde(flatten)]
+    position: BarePosition,
 }
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
@@ -499,11 +508,9 @@ impl FStarIDE {
     }
 }
 
-
-impl Position {
-    pub fn from(filename: String, pos: tower_lsp::lsp_types::Position) -> Self {
-        Position{
-            filename,
+impl BarePosition {
+    pub fn from(pos: tower_lsp::lsp_types::Position) -> Self {
+        BarePosition{
             line: pos.line + 1,
             column: pos.character,
         }
@@ -514,6 +521,20 @@ impl Position {
             if self.line > 0 { self.line - 1 } else { self.line },
             self.column
         )
+    }
+}
+
+
+impl Position {
+    pub fn from(filename: String, pos: tower_lsp::lsp_types::Position) -> Self {
+        Position{
+            filename,
+            position: BarePosition::from(pos),
+        }
+    }
+
+    pub fn into(self) -> tower_lsp::lsp_types::Position {
+        self.position.into()
     }
 }
 

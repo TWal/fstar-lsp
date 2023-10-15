@@ -255,7 +255,7 @@ impl FileBackend {
             while let Some(_) = ch.recv().await {}
         }
 
-        self.load_full_buffer(text);
+        self.handle_full_buffer_change(text);
     }
 
     async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
@@ -345,16 +345,25 @@ impl FileBackend {
         }
     }
 
-    fn load_full_buffer(&self, text: &str) {
+    fn handle_full_buffer_change(&self, text: &str) {
         self.lock().unwrap().text = text.to_string();
 
         self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Cache);
         self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::Full);
     }
 
-    async fn verify_full_buffer(&self) {
+    fn verify_full_buffer(&self) {
         self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Full);
     }
+
+    fn verify_to_position(&self, pos: Position) {
+        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::VerifyToPosition(fstar_ide::BarePosition::from(pos)))
+    }
+
+    fn lax_to_position(&self, pos: Position) {
+        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::LaxToPosition(fstar_ide::BarePosition::from(pos)))
+    }
+
 
     async fn cancel_all(&self) {
         let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
@@ -604,6 +613,20 @@ struct VerifyAllParams {
 
 #[derive (Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+struct LaxToPositionParams {
+    text_document: TextDocumentIdentifier,
+    position: Position,
+}
+
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct VerifyToPositionParams {
+    text_document: TextDocumentIdentifier,
+    position: Position,
+}
+
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 struct CancelAllParams {
     text_document: TextDocumentIdentifier,
 }
@@ -685,7 +708,33 @@ impl Backend {
         };
         let path = params.text_document.uri.path();
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
-        ide.verify_full_buffer().await;
+        ide.verify_full_buffer();
+    }
+
+    async fn lax_to_position(&self, params: serde_json::Value) {
+        let params: LaxToPositionParams = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[lax_to_position]: couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.lax_to_position(params.position);
+    }
+
+    async fn verify_to_position(&self, params: serde_json::Value) {
+        let params: VerifyToPositionParams = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[verify_to_position]: couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.verify_to_position(params.position);
     }
 
     async fn cancel_all(&self, params: serde_json::Value) {
@@ -790,7 +839,7 @@ impl LanguageServer for Backend {
         let path = params.text_document.uri.path();
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         let new_text = &params.content_changes[0].text;
-        ide.load_full_buffer(new_text);
+        ide.handle_full_buffer_change(new_text);
     }
 
     async fn did_save(&self, _: DidSaveTextDocumentParams) {
@@ -887,6 +936,8 @@ async fn main() {
     let (service, socket) = LspService::build(
         |client| Backend { client: Arc::new(client), ides: RwLock::new(std::collections::HashMap::new()) })
         .custom_method("fstar-lsp/verifyAll", Backend::verify_all)
+        .custom_method("fstar-lsp/laxToPosition", Backend::lax_to_position)
+        .custom_method("fstar-lsp/verifyToPosition", Backend::verify_to_position)
         .custom_method("fstar-lsp/cancelAll", Backend::cancel_all)
         .finish()
     ;
