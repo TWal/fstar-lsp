@@ -391,6 +391,12 @@ impl FileBackend {
     }
 
     #[tracing::instrument(skip(self))]
+    fn reload_dependencies(&self) {
+        self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::ReloadDeps);
+        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::ReloadDeps);
+    }
+
+    #[tracing::instrument(skip(self))]
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
         let (response, range) = self.lookup_query(vec![fstar_ide::LookupRequest::Type], pos).await?;
         let response_type = match response.type_ {
@@ -659,6 +665,12 @@ struct CancelAllParams {
     text_document: TextDocumentIdentifier,
 }
 
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ReloadDependenciesParams {
+    text_document: TextDocumentIdentifier,
+}
+
 struct ClearStatusNotification {}
 #[derive(Serialize, Deserialize)]
 struct ClearStatusNotificationParams {
@@ -786,6 +798,22 @@ impl Backend {
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         ide.cancel_all().await;
     }
+
+    #[tracing::instrument(skip(self))]
+    async fn reload_dependencies(&self, params: serde_json::Value) {
+        debug!("start");
+        let params: ReloadDependenciesParams = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.reload_dependencies();
+    }
+
 }
 
 #[tower_lsp::async_trait]
@@ -1008,6 +1036,7 @@ async fn main() {
         .custom_method("fstar-lsp/laxToPosition", Backend::lax_to_position)
         .custom_method("fstar-lsp/verifyToPosition", Backend::verify_to_position)
         .custom_method("fstar-lsp/cancelAll", Backend::cancel_all)
+        .custom_method("fstar-lsp/reloadDependencies", Backend::reload_dependencies)
         .finish()
     ;
     Server::new(stdin, stdout, socket).serve(service).await;
