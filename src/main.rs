@@ -22,6 +22,7 @@ use std::sync::{Arc, RwLock, Mutex};
 
 struct FileBackendInternal {
     path: String,
+    working_dir: std::path::PathBuf,
     lax_ide: Option<fstar_ide::FStarIDE>,
     ide: fstar_ide::FStarIDE,
     text: String,
@@ -110,6 +111,7 @@ impl FileBackendInternal {
 
         FileBackendInternal {
             path: path.to_string(),
+            working_dir: working_dir.clone(),
             lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat(), working_dir.as_path())),
             ide: fstar_ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat(), working_dir.as_path()),
             text: String::from(""),
@@ -937,8 +939,17 @@ impl LanguageServer for Backend {
                 let uri = match file {
                     GotoDefinitionResultFile::ThisFile =>
                         params.text_document_position_params.text_document.uri,
-                    GotoDefinitionResultFile::OtherFile(path) =>
-                        Url::from_file_path(std::path::Path::new(&path)).unwrap(),
+                    GotoDefinitionResultFile::OtherFile(path) => {
+                        let path = std::path::Path::new(&path);
+                        let absolute_path = 
+                            if path.is_absolute() {
+                                path.to_path_buf()
+                            } else {
+                                ide.lock().unwrap().working_dir.join(path)
+                            }
+                        ;
+                        Url::from_file_path(absolute_path).unwrap()
+                    }
                 };
                 Ok(Some(GotoDefinitionResponse::Scalar(
                     Location{
