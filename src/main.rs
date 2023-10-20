@@ -397,6 +397,12 @@ impl FileBackend {
     }
 
     #[tracing::instrument(skip(self))]
+    fn restart_z3(&self) {
+        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::RestartSolver{});
+        // the RestartSolver query doesn't send back any message -- ignore
+    }
+
+    #[tracing::instrument(skip(self))]
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
         let (response, range) = self.lookup_query(vec![fstar_ide::LookupRequest::Type], pos).await?;
         let response_type = match response.type_ {
@@ -671,6 +677,12 @@ struct ReloadDependenciesParams {
     text_document: TextDocumentIdentifier,
 }
 
+#[derive (Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct RestartZ3Params {
+    text_document: TextDocumentIdentifier,
+}
+
 struct ClearStatusNotification {}
 #[derive(Serialize, Deserialize)]
 struct ClearStatusNotificationParams {
@@ -814,6 +826,20 @@ impl Backend {
         ide.reload_dependencies();
     }
 
+    #[tracing::instrument(skip(self))]
+    async fn restart_z3(&self, params: serde_json::Value) {
+        debug!("start");
+        let params: RestartZ3Params = match serde_json::from_value(params) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("couldn't parse: {}", e);
+                return
+            }
+        };
+        let path = params.text_document.uri.path();
+        let ide = self.ides.read().unwrap().get(path).unwrap().clone();
+        ide.restart_z3();
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1037,6 +1063,7 @@ async fn main() {
         .custom_method("fstar-lsp/verifyToPosition", Backend::verify_to_position)
         .custom_method("fstar-lsp/cancelAll", Backend::cancel_all)
         .custom_method("fstar-lsp/reloadDependencies", Backend::reload_dependencies)
+        .custom_method("fstar-lsp/restartZ3", Backend::restart_z3)
         .finish()
     ;
     Server::new(stdin, stdout, socket).serve(service).await;
