@@ -6,9 +6,16 @@ use tokio::io::AsyncWriteExt;
 use std::process::Stdio;
 use std::ffi::OsStr;
 use std::sync::{Arc, Mutex};
-use crate::{log, info, warning, error};
 use anyhow::Result;
 use crate::sync_channel;
+
+use tracing::{
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+};
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 pub struct FullQuery {
@@ -342,11 +349,11 @@ pub mod bare {
         })
     }
 
+    #[tracing::instrument(skip_all)]
     async fn fstar_stdin_loop(mut recv_query: mpsc::UnboundedReceiver<FullQuery>, mut fstar_stdin: tokio::process::ChildStdin) -> Result<()> {
         while let Some(query) = recv_query.recv().await {
-            log!("[send] [high] {:?}", query);
             let line = serde_json::to_string(&query)?;
-            log!("[send] [bare] {}", line);
+            debug!("sending query {}", line);
             fstar_stdin.write_all(line.as_bytes()).await?;
             fstar_stdin.write_all(b"\n").await?;
             fstar_stdin.flush().await?;
@@ -354,17 +361,17 @@ pub mod bare {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all)]
     async fn fstar_stdout_loop(send_response: mpsc::UnboundedSender<FullResponseOrMessage>, fstar_stdout: tokio::process::ChildStdout) -> Result<()> {
         let mut fstar_stdout_lines = tokio::io::BufReader::new(fstar_stdout).lines();
         let _ = fstar_stdout_lines.next_line().await?;
         while let Some(line) = fstar_stdout_lines.next_line().await? {
-            log!("[recv] [bare] {}", line);
+            debug!("receiving response {}", line);
             match serde_json::from_str(&line) {
                 Err(e) => {
-                    error!("[recv] Cannot parse F*'s stdout: {}", e)
+                    error!("Cannot parse F*'s stdout: {}", e)
                 }
                 Ok(response) => {
-                    log!("[recv] [high] {:?}", response);
                     send_response.send(response)?;
                 }
             };
@@ -459,12 +466,14 @@ impl FStarIDE {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn send_query_nosync(&mut self, query: Query) -> mpsc::Receiver<ResponseOrMessage> {
         let (send, recv) = mpsc::channel(100);
         self.send_query_internal(query, FStarIDESender::NoSync(send));
         recv
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn send_query_sync(&mut self, query: Query) -> sync_channel::Receiver<ResponseOrMessage> {
         let (send, recv) = sync_channel::channel();
         self.send_query_internal(query, FStarIDESender::Sync(send));
@@ -490,6 +499,7 @@ impl FStarIDE {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn receive_loop(mut recv: bare::Receiver, channels: Arc<Mutex<std::collections::HashMap<String, (FStarIDESender, LastMessageDecider)>>>,) -> Result<()> {
         while let Some(data) = recv.recv().await {
             let opt_send = channels.lock().unwrap().get(Self::normalize_query_id(&data.query_id)).cloned();
@@ -497,7 +507,7 @@ impl FStarIDE {
                 let is_last_data = last_message_decider.decide(&data.response_or_message);
                 send.send(data.response_or_message).await?;
                 if is_last_data  {
-                    info!("[recv loop] deleting channel for query {}", Self::normalize_query_id(&data.query_id));
+                    debug!("deleting channel for query {}", Self::normalize_query_id(&data.query_id));
                     channels.lock().unwrap().remove(&data.query_id);
                 }
             } else {

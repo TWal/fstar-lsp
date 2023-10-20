@@ -1,5 +1,4 @@
 mod fstar_ide;
-mod logging;
 mod sync_channel;
 
 use crate::notification::Notification;
@@ -10,6 +9,14 @@ use tokio::sync::mpsc;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+use tracing::{
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+};
 
 use std::sync::{Arc, RwLock, Mutex};
 
@@ -155,6 +162,7 @@ struct FileBackend {
     shared: Arc<Mutex<FileBackendInternal>>,
 }
 
+#[derive(Debug)]
 enum HoverResultText {
     NoDocumentation {
         full_name: String,
@@ -167,16 +175,19 @@ enum HoverResultText {
     }
 }
 
+#[derive(Debug)]
 struct HoverResult {
     result: HoverResultText,
     range: Range,
 }
 
+#[derive (Debug)]
 enum GotoDefinitionResultFile {
     ThisFile,
     OtherFile(String),
 }
 
+#[derive (Debug)]
 struct GotoDefinitionResult {
     file: GotoDefinitionResultFile,
     range: Range,
@@ -238,6 +249,7 @@ impl FileBackend {
         }, recv)
     }
 
+    #[tracing::instrument(skip(self))]
     async fn init(&self, text: &str) {
         let query =
             fstar_ide::Query::VfsAdd(fstar_ide::VfsAddQuery{
@@ -258,6 +270,7 @@ impl FileBackend {
         self.handle_full_buffer_change(text);
     }
 
+    #[tracing::instrument(skip_all)]
     async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
         while let Some((resp_or_msg, acker)) = ch.recv().await {
             let opt_message = match resp_or_msg {
@@ -300,7 +313,7 @@ impl FileBackend {
                     match serde_json::from_value::<fstar_ide::VerificationFailureResponse>(response) {
                         Ok(x) => Some(FullBufferMessage::Error(x)),
                         Err(e) => {
-                            error!("[full-buffer] Couldn't parse failure response: {}", e);
+                            error!("Couldn't parse failure response: {}", e);
                             None
                         }
                     }
@@ -317,6 +330,7 @@ impl FileBackend {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn send_full_buffer_query(&self, ide_type: IdeType, kind: fstar_ide::FullBufferKind) {
         let code = self.lock().unwrap().text.clone();
         let full_buffer_message = 
@@ -345,6 +359,7 @@ impl FileBackend {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn handle_full_buffer_change(&self, text: &str) {
         self.lock().unwrap().text = text.to_string();
 
@@ -352,30 +367,34 @@ impl FileBackend {
         self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::Full);
     }
 
+    #[tracing::instrument(skip(self))]
     fn verify_full_buffer(&self) {
         self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Full);
     }
 
+    #[tracing::instrument(skip(self))]
     fn verify_to_position(&self, pos: Position) {
         self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::VerifyToPosition(fstar_ide::BarePosition::from(pos)))
     }
 
+    #[tracing::instrument(skip(self))]
     fn lax_to_position(&self, pos: Position) {
         self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::LaxToPosition(fstar_ide::BarePosition::from(pos)))
     }
 
-
+    #[tracing::instrument(skip(self))]
     async fn cancel_all(&self) {
         let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
         // the Cancel query doesn't send back any message -- ignore
     }
 
+    #[tracing::instrument(skip(self))]
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
         let (response, range) = self.lookup_query(vec![fstar_ide::LookupRequest::Type], pos).await?;
         let response_type = match response.type_ {
             Some(x) => x,
             None => {
-                error!("[hover] expected a type to be present");
+                error!("expected a type to be present");
                 return None;
             }
         };
@@ -388,12 +407,13 @@ impl FileBackend {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     async fn goto_definition(&self, pos: Position) -> Option<GotoDefinitionResult> {
         let (response, _symbol_range) = self.lookup_query(vec![fstar_ide::LookupRequest::DefinedAt], pos).await?;
         let response_defined_at = match response.defined_at {
             Some(x) => x,
             None => {
-                error!("[goto_definition] expected a definition location to be present");
+                error!("expected a definition location to be present");
                 return None;
             }
         };
@@ -408,6 +428,7 @@ impl FileBackend {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     async fn lookup_query(&self, info: Vec<fstar_ide::LookupRequest>, pos: Position) -> Option<(fstar_ide::LookupResponse, Range)> {
         let symbol = self.lock().unwrap().get_symbol_at(pos);
         let Some(symbol) = symbol else {
@@ -423,24 +444,28 @@ impl FileBackend {
             })
         );
         let resp_or_msg = ch.recv().await;
-        let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg else { panic!("lookup A"); };
+        let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg else {
+            error!("expected response, got {:?}", resp_or_msg);
+            return None
+        };
         if status != fstar_ide::ResponseStatus::Success {
             return None
         }
         let response = match serde_json::from_value::<fstar_ide::LookupResponse>(response) {
             Ok(x) => x,
             Err(e) => {
-                error!("[lookup] Couldn't parse response: {}", e);
+                error!("Couldn't parse response: {}", e);
                 return None
             }
         };
         if response.kind != *"symbol" {
-            error!("[lookup] Response's kind is not symbol: {}", response.kind);
+            error!("Response's kind is not symbol: {}", response.kind);
             return None
         }
         Some((response, symbol.range))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn complete(&self, pos: Position) -> Option<CompleteResult> {
         let symbol = self.lock().unwrap().get_symbol_at(pos);
         let Some(symbol) = symbol else {
@@ -456,7 +481,7 @@ impl FileBackend {
 
         let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg
         else {
-            error!("[complete] expected a response, got {:?}", resp_or_msg);
+            error!("expected a response, got {:?}", resp_or_msg);
             return None
         };
         if status != fstar_ide::ResponseStatus::Success {
@@ -472,7 +497,7 @@ impl FileBackend {
                 )
             }
             Err(err) => {
-                error!("[complete] couldn't parse response: {}", err);
+                error!("couldn't parse response: {}", err);
                 return None
             }
         }
@@ -507,6 +532,7 @@ impl DiagnosticsStateMachine {
         self.get_vec_for(ide_type).clear();
     }
 
+    #[tracing::instrument(skip(self))]
     fn process_error(&mut self, ide_type: IdeType, error: fstar_ide::VerificationFailureResponseItem) {
         let severity = match error.level {
             fstar_ide::VerificationFailureLevel::Error => DiagnosticSeverity::ERROR,
@@ -658,12 +684,13 @@ impl Notification for SetStatusNotification {
 
 
 impl Backend {
+    #[tracing::instrument(skip_all, fields(path = uri.path()))]
     async fn receive_full_buffer_message_loop(uri: Url, client: Arc<Client>, mut recv: mpsc::UnboundedReceiver<IdeFullBufferMessage>) {
         let mut diagnostic_state_machine = DiagnosticsStateMachine::new(uri.clone(), client.clone());
         let mut status_state_machine = StatusStateMachine::new(uri.clone(), client.clone());
 
         while let Some(msg) = recv.recv().await {
-            info!("got msg {:?}", msg);
+            debug!("received message {:?}", msg);
             // Handle diagnostics
             match msg.message.clone() {
                 FullBufferMessage::Started => {
@@ -698,11 +725,13 @@ impl Backend {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     async fn verify_all(&self, params: serde_json::Value) {
+        debug!("start");
         let params: VerifyAllParams = match serde_json::from_value(params) {
             Ok(x) => x,
             Err(e) => {
-                error!("[verify_all]: couldn't parse: {}", e);
+                error!("couldn't parse: {}", e);
                 return
             }
         };
@@ -711,11 +740,13 @@ impl Backend {
         ide.verify_full_buffer();
     }
 
+    #[tracing::instrument(skip(self))]
     async fn lax_to_position(&self, params: serde_json::Value) {
+        debug!("start");
         let params: LaxToPositionParams = match serde_json::from_value(params) {
             Ok(x) => x,
             Err(e) => {
-                error!("[lax_to_position]: couldn't parse: {}", e);
+                error!("couldn't parse: {}", e);
                 return
             }
         };
@@ -724,11 +755,13 @@ impl Backend {
         ide.lax_to_position(params.position);
     }
 
+    #[tracing::instrument(skip(self))]
     async fn verify_to_position(&self, params: serde_json::Value) {
+        debug!("start");
         let params: VerifyToPositionParams = match serde_json::from_value(params) {
             Ok(x) => x,
             Err(e) => {
-                error!("[verify_to_position]: couldn't parse: {}", e);
+                error!("couldn't parse: {}", e);
                 return
             }
         };
@@ -737,11 +770,13 @@ impl Backend {
         ide.verify_to_position(params.position);
     }
 
+    #[tracing::instrument(skip(self))]
     async fn cancel_all(&self, params: serde_json::Value) {
+        debug!("start");
         let params: CancelAllParams = match serde_json::from_value(params) {
             Ok(x) => x,
             Err(e) => {
-                error!("[cancel_all]: couldn't parse: {}", e);
+                error!("couldn't parse: {}", e);
                 return
             }
         };
@@ -753,6 +788,7 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
+    #[tracing::instrument(skip(self))]
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             server_info: None,
@@ -782,12 +818,14 @@ impl LanguageServer for Backend {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     async fn initialized(&self, _: InitializedParams) {
         self.client
             .log_message(MessageType::INFO, "initialized!")
             .await;
     }
 
+    #[tracing::instrument(skip(self))]
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -824,6 +862,7 @@ impl LanguageServer for Backend {
     //     Ok(None)
     // }
 
+    #[tracing::instrument(skip(self))]
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let path = params.text_document.uri.path();
         let (ide, recv) = FileBackend::new(path);
@@ -832,7 +871,9 @@ impl LanguageServer for Backend {
         tokio::spawn(Self::receive_full_buffer_message_loop(params.text_document.uri, self.client.clone(), recv));
     }
 
+    #[tracing::instrument(skip_all)]
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        debug!("start");
         assert!(params.content_changes.len() == 1);
         assert!(params.content_changes[0].range.is_none());
         assert!(params.content_changes[0].range_length.is_none());
@@ -842,19 +883,25 @@ impl LanguageServer for Backend {
         ide.handle_full_buffer_change(new_text);
     }
 
+    #[tracing::instrument(skip(self))]
     async fn did_save(&self, _: DidSaveTextDocumentParams) {
     }
 
+    #[tracing::instrument(skip(self))]
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let path = params.text_document.uri.path();
         let _ = self.ides.write().unwrap().remove(path);
     }
 
+    #[tracing::instrument(skip_all)]
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let path = params.text_document_position.text_document.uri.path();
         let pos = params.text_document_position.position;
+        info!("on {:?} {:?}", path, pos);
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
-        match ide.complete(pos).await {
+        let result = ide.complete(pos).await ;
+        info!("result: {:?}", result);
+        match result {
             None => Ok(None),
             Some(completion_result) => {
                 Ok(Some(CompletionResponse::Array(
@@ -876,11 +923,14 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
         let path = params.text_document_position_params.text_document.uri.path();
         let pos = params.text_document_position_params.position;
+        info!("on {:?} {:?}", path, pos);
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         let result = ide.goto_definition(pos).await;
+        info!("result: {:?}", result);
         match result {
             None => Ok(None),
             Some(GotoDefinitionResult { file, range }) => {
@@ -900,11 +950,14 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let path = params.text_document_position_params.text_document.uri.path();
         let pos = params.text_document_position_params.position;
+        info!("on {:?} {:?}", path, pos);
         let ide = self.ides.read().unwrap().get(path).unwrap().clone();
         let hover_result = ide.hover(pos).await;
+        info!("result: {:?}", hover_result);
         match hover_result {
             None => Ok(None),
             Some(HoverResult { result, range }) => {
@@ -929,9 +982,14 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
-    //tracing_subscriber::fmt().init();
+    let log_file = std::fs::File::create("/tmp/fstar-lsp.log").unwrap();
+    tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_file(true)
+        .with_line_number(true)
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
 
-    logging::set_log_level(logging::LogLevel::Info);
     let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
     let (service, socket) = LspService::build(
         |client| Backend { client: Arc::new(client), ides: RwLock::new(std::collections::HashMap::new()) })
