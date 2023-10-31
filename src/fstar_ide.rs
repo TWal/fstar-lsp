@@ -267,6 +267,10 @@ pub enum ProgressMessage {
     FullBufferFinished,
 }
 
+#[derive(Deserialize, PartialEq, Clone, Debug)]
+pub struct Null {
+}
+
 // Sometimes, F*-ide with full-buffer can respond a ProgressMessage with "stage: null".
 // The derived Deserializer above expect the "stage" field to be a string.
 // This hack with untagged allows us to catch the null case.
@@ -274,7 +278,7 @@ pub enum ProgressMessage {
 #[serde(untagged)]
 pub enum ProgressMessageOrNull {
     Some(ProgressMessage),
-    Null{stage: Option<()>},
+    Null{stage: Null},
 }
 
 #[derive(Deserialize, PartialEq, Clone, Debug)]
