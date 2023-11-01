@@ -6,9 +6,9 @@ use crate::fstar;
 use crate::sync_channel;
 
 use tracing::{
-    trace,
-    debug,
-    info,
+    // trace,
+    // debug,
+    // info,
     warn,
     error,
 };
@@ -16,6 +16,7 @@ use tracing::{
 
 #[derive (Deserialize)]
 struct Config {
+    #[allow(dead_code)]
     fstar_exe: Option<String>,
     options: Option<Vec<String>>,
     include_dirs: Option<Vec<String>>,
@@ -164,6 +165,7 @@ pub enum HoverResultText {
         full_name: String,
         type_: String,
     },
+    #[allow(dead_code)]
     WithDocumentation {
         full_name: String,
         type_: String,

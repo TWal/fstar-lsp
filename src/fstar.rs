@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(tag = "query", content = "args")]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum Query {
     Exit{},
     DescribeProtocol{},
@@ -30,6 +31,7 @@ pub enum Query {
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum PushKind {
     Syntax,
     Lax,
@@ -69,6 +71,7 @@ pub struct AutoCompleteQuery {
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum LookupContext {
     SymbolOnly,
     Code,
@@ -82,6 +85,7 @@ pub enum LookupContext {
 
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum LookupRequest {
     DefinedAt,
     Type,
@@ -109,6 +113,7 @@ pub struct ComputeQuery {
 #[derive(Serialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
 #[serde(tag = "kind", content = "to-position")]
+#[allow(dead_code)]
 pub enum FullBufferKind {
     Full,
     Lax,
@@ -299,6 +304,7 @@ impl BarePosition {
         }
     }
 
+    #[allow(dead_code)]
     pub fn into(self) -> tower_lsp::lsp_types::Position {
         tower_lsp::lsp_types::Position::new(
             if self.line > 0 { self.line - 1 } else { self.line },
@@ -316,12 +322,14 @@ impl Position {
         }
     }
 
+    #[allow(dead_code)]
     pub fn into(self) -> tower_lsp::lsp_types::Position {
         self.position.into()
     }
 }
 
 impl Range {
+    #[allow(dead_code)]
     pub fn from(filename: String, range: tower_lsp::lsp_types::Range) -> Self {
         Range {
             fname: filename,

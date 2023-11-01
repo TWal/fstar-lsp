@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use tracing::{
-    trace,
+    // trace,
     debug,
-    info,
+    // info,
     warn,
     error,
 };

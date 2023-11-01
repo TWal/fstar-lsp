@@ -14,7 +14,7 @@ use tower_lsp::{Client, LanguageServer};
 use std::sync::{Arc, RwLock};
 
 use tracing::{
-    trace,
+    // trace,
     debug,
     info,
     warn,
@@ -88,7 +88,7 @@ impl DiagnosticsStateMachine {
         self.get_vec_for(ide_type).push(diagnostic);
     }
 
-    async fn finish(&self, ide_type: IdeType) {
+    async fn finish(&self, _ide_type: IdeType) {
         let all_diagnostics: Vec<Diagnostic> =
             self.lax_diagnostics.clone().into_iter()
             .chain(self.full_diagnostics.clone().into_iter())
@@ -545,7 +545,7 @@ impl LanguageServer for Backend {
                             range: Some(range),
                         }))
                     }
-                    HoverResultText::WithDocumentation { full_name, type_, documentation } => {
+                    HoverResultText::WithDocumentation { full_name:_, type_:_, documentation:_ } => {
                         panic!()
                     }
                 }
