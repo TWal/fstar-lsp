@@ -1,4 +1,4 @@
-mod fstar_ide;
+mod fstar;
 mod sync_channel;
 
 use crate::notification::Notification;
@@ -23,8 +23,8 @@ use std::sync::{Arc, RwLock, Mutex};
 struct FileBackendInternal {
     path: String,
     working_dir: std::path::PathBuf,
-    lax_ide: Option<fstar_ide::FStarIDE>,
-    ide: fstar_ide::FStarIDE,
+    lax_ide: Option<fstar::ide::FStarIDE>,
+    ide: fstar::ide::FStarIDE,
     text: String,
     send_full_buffer_msg: mpsc::UnboundedSender<IdeFullBufferMessage>,
 }
@@ -112,8 +112,8 @@ impl FileBackendInternal {
         FileBackendInternal {
             path: path.to_string(),
             working_dir: working_dir.clone(),
-            lax_ide: Some(fstar_ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat(), working_dir.as_path())),
-            ide: fstar_ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat(), working_dir.as_path()),
+            lax_ide: Some(fstar::ide::FStarIDE::new("fstar.exe", [vec![path, "--admit_smt_queries", "true"], additional_options.clone()].concat(), working_dir.as_path())),
+            ide: fstar::ide::FStarIDE::new("fstar.exe", [vec![path], additional_options].concat(), working_dir.as_path()),
             text: String::from(""),
             send_full_buffer_msg,
         }
@@ -147,7 +147,7 @@ impl FileBackendInternal {
         })
     }
 
-    fn get_flycheck_ide(&mut self) -> &mut fstar_ide::FStarIDE {
+    fn get_flycheck_ide(&mut self) -> &mut fstar::ide::FStarIDE {
         match self.lax_ide.as_mut() {
             None => {
                 &mut self.ide
@@ -224,7 +224,7 @@ enum FullBufferMessage {
     Started,
     FragmentStatusUpdate(FragmentStatusUpdate),
     Finished,
-    Error(fstar_ide::VerificationFailureResponse),
+    Error(fstar::VerificationFailureResponse),
 }
 
 #[derive (PartialEq, Copy, Clone, Debug)]
@@ -254,7 +254,7 @@ impl FileBackend {
     #[tracing::instrument(skip(self))]
     async fn init(&self, text: &str) {
         let query =
-            fstar_ide::Query::VfsAdd(fstar_ide::VfsAddQuery{
+            fstar::Query::VfsAdd(fstar::VfsAddQuery{
                 filename: None,
                 contents: text.to_string(),
             })
@@ -273,46 +273,46 @@ impl FileBackend {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar_ide::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
+    async fn handle_full_buffer_messages_loop(mut ch: sync_channel::Receiver<fstar::ResponseOrMessage>, send: mpsc::UnboundedSender<IdeFullBufferMessage>, ide_type: IdeType) {
         while let Some((resp_or_msg, acker)) = ch.recv().await {
             let opt_message = match resp_or_msg {
-                fstar_ide::ResponseOrMessage::Message(fstar_ide::Message::Progress(fstar_ide::ProgressMessageOrNull::Some(data))) => {
+                fstar::ResponseOrMessage::Message(fstar::Message::Progress(fstar::ProgressMessageOrNull::Some(data))) => {
                     match data {
-                        fstar_ide::ProgressMessage::FullBufferFragmentStarted{ranges} => {
+                        fstar::ProgressMessage::FullBufferFragmentStarted{ranges} => {
                             Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::InProgress,
                                 range: ranges.into(),
                             }))
                         },
-                        fstar_ide::ProgressMessage::FullBufferFragmentFailed{ranges} => {
+                        fstar::ProgressMessage::FullBufferFragmentFailed{ranges} => {
                             Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::Failed,
                                 range: ranges.into(),
                             }))
                         },
-                        fstar_ide::ProgressMessage::FullBufferFragmentLaxOk(fragment) => {
+                        fstar::ProgressMessage::FullBufferFragmentLaxOk(fragment) => {
                             Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: FragmentStatus::LaxOk,
                                 range: fragment.ranges.into(),
                             }))
                         },
-                        fstar_ide::ProgressMessage::FullBufferFragmentOk(fragment) => {
+                        fstar::ProgressMessage::FullBufferFragmentOk(fragment) => {
                             Some(FullBufferMessage::FragmentStatusUpdate (FragmentStatusUpdate {
                                 status_type: if ide_type == IdeType::Lax { FragmentStatus::LaxOk } else { FragmentStatus::Ok },
                                 range: fragment.ranges.into(),
                             }))
                         },
-                        fstar_ide::ProgressMessage::FullBufferStarted => {
+                        fstar::ProgressMessage::FullBufferStarted => {
                             Some(FullBufferMessage::Started)
                         },
-                        fstar_ide::ProgressMessage::FullBufferFinished => {
+                        fstar::ProgressMessage::FullBufferFinished => {
                             Some(FullBufferMessage::Finished)
                         },
                         _ => None
                     }
                 }
-                fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status: _, response}) => {
-                    match serde_json::from_value::<fstar_ide::VerificationFailureResponse>(response) {
+                fstar::ResponseOrMessage::Response(fstar::Response{status: _, response}) => {
+                    match serde_json::from_value::<fstar::VerificationFailureResponse>(response) {
                         Ok(x) => Some(FullBufferMessage::Error(x)),
                         Err(e) => {
                             error!("Couldn't parse failure response: {}", e);
@@ -333,10 +333,10 @@ impl FileBackend {
     }
 
     #[tracing::instrument(skip(self))]
-    fn send_full_buffer_query(&self, ide_type: IdeType, kind: fstar_ide::FullBufferKind) {
+    fn send_full_buffer_query(&self, ide_type: IdeType, kind: fstar::FullBufferKind) {
         let code = self.lock().unwrap().text.clone();
         let full_buffer_message = 
-            fstar_ide::Query::FullBuffer(fstar_ide::FullBufferQuery{
+            fstar::Query::FullBuffer(fstar::FullBufferQuery{
                 code,
                 kind,
                 with_symbols: false,
@@ -365,46 +365,46 @@ impl FileBackend {
     fn handle_full_buffer_change(&self, text: &str) {
         self.lock().unwrap().text = text.to_string();
 
-        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Cache);
-        self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::Full);
+        self.send_full_buffer_query(IdeType::Full, fstar::FullBufferKind::Cache);
+        self.send_full_buffer_query(IdeType::Lax, fstar::FullBufferKind::Full);
     }
 
     #[tracing::instrument(skip(self))]
     fn verify_full_buffer(&self) {
-        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::Full);
+        self.send_full_buffer_query(IdeType::Full, fstar::FullBufferKind::Full);
     }
 
     #[tracing::instrument(skip(self))]
     fn verify_to_position(&self, pos: Position) {
-        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::VerifyToPosition(fstar_ide::BarePosition::from(pos)))
+        self.send_full_buffer_query(IdeType::Full, fstar::FullBufferKind::VerifyToPosition(fstar::BarePosition::from(pos)))
     }
 
     #[tracing::instrument(skip(self))]
     fn lax_to_position(&self, pos: Position) {
-        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::LaxToPosition(fstar_ide::BarePosition::from(pos)))
+        self.send_full_buffer_query(IdeType::Full, fstar::FullBufferKind::LaxToPosition(fstar::BarePosition::from(pos)))
     }
 
     #[tracing::instrument(skip(self))]
     async fn cancel_all(&self) {
-        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::Cancel(fstar_ide::CancelPosition{cancel_line: 1, cancel_column: 0}));
+        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar::Query::Cancel(fstar::CancelPosition{cancel_line: 1, cancel_column: 0}));
         // the Cancel query doesn't send back any message -- ignore
     }
 
     #[tracing::instrument(skip(self))]
     fn reload_dependencies(&self) {
-        self.send_full_buffer_query(IdeType::Lax, fstar_ide::FullBufferKind::ReloadDeps);
-        self.send_full_buffer_query(IdeType::Full, fstar_ide::FullBufferKind::ReloadDeps);
+        self.send_full_buffer_query(IdeType::Lax, fstar::FullBufferKind::ReloadDeps);
+        self.send_full_buffer_query(IdeType::Full, fstar::FullBufferKind::ReloadDeps);
     }
 
     #[tracing::instrument(skip(self))]
     fn restart_z3(&self) {
-        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar_ide::Query::RestartSolver{});
+        let _ch = self.lock().unwrap().ide.send_query_nosync(fstar::Query::RestartSolver{});
         // the RestartSolver query doesn't send back any message -- ignore
     }
 
     #[tracing::instrument(skip(self))]
     async fn hover(&self, pos: Position) -> Option<HoverResult> {
-        let (response, range) = self.lookup_query(vec![fstar_ide::LookupRequest::Type], pos).await?;
+        let (response, range) = self.lookup_query(vec![fstar::LookupRequest::Type], pos).await?;
         let response_type = match response.type_ {
             Some(x) => x,
             None => {
@@ -423,7 +423,7 @@ impl FileBackend {
 
     #[tracing::instrument(skip(self))]
     async fn goto_definition(&self, pos: Position) -> Option<GotoDefinitionResult> {
-        let (response, _symbol_range) = self.lookup_query(vec![fstar_ide::LookupRequest::DefinedAt], pos).await?;
+        let (response, _symbol_range) = self.lookup_query(vec![fstar::LookupRequest::DefinedAt], pos).await?;
         let response_defined_at = match response.defined_at {
             Some(x) => x,
             None => {
@@ -443,29 +443,29 @@ impl FileBackend {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn lookup_query(&self, info: Vec<fstar_ide::LookupRequest>, pos: Position) -> Option<(fstar_ide::LookupResponse, Range)> {
+    async fn lookup_query(&self, info: Vec<fstar::LookupRequest>, pos: Position) -> Option<(fstar::LookupResponse, Range)> {
         let symbol = self.lock().unwrap().get_symbol_at(pos);
         let Some(symbol) = symbol else {
             return None
         };
         let path = self.lock().unwrap().path.clone();
         let mut ch = self.lock().unwrap().get_flycheck_ide().send_query_nosync(
-            fstar_ide::Query::Lookup(fstar_ide::LookupQuery {
-                context: fstar_ide::LookupContext::Code,
+            fstar::Query::Lookup(fstar::LookupQuery {
+                context: fstar::LookupContext::Code,
                 symbol: symbol.symbol.clone(),
                 requested_info: info,
-                location: Some(fstar_ide::Position::from(path, pos)),
+                location: Some(fstar::Position::from(path, pos)),
             })
         );
         let resp_or_msg = ch.recv().await;
-        let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg else {
+        let Some(fstar::ResponseOrMessage::Response(fstar::Response{status, response})) = resp_or_msg else {
             error!("expected response, got {:?}", resp_or_msg);
             return None
         };
-        if status != fstar_ide::ResponseStatus::Success {
+        if status != fstar::ResponseStatus::Success {
             return None
         }
-        let response = match serde_json::from_value::<fstar_ide::LookupResponse>(response) {
+        let response = match serde_json::from_value::<fstar::LookupResponse>(response) {
             Ok(x) => x,
             Err(e) => {
                 error!("Couldn't parse response: {}", e);
@@ -486,26 +486,26 @@ impl FileBackend {
             return None
         };
         let mut ch = self.lock().unwrap().get_flycheck_ide().send_query_nosync(
-            fstar_ide::Query::AutoComplete(fstar_ide::AutoCompleteQuery {
-                context: fstar_ide::AutoCompleteContext::Code,
+            fstar::Query::AutoComplete(fstar::AutoCompleteQuery {
+                context: fstar::AutoCompleteContext::Code,
                 partial_symbol: symbol.symbol,
             })
         );
         let resp_or_msg = ch.recv().await;
 
-        let Some(fstar_ide::ResponseOrMessage::Response(fstar_ide::Response{status, response})) = resp_or_msg
+        let Some(fstar::ResponseOrMessage::Response(fstar::Response{status, response})) = resp_or_msg
         else {
             error!("expected a response, got {:?}", resp_or_msg);
             return None
         };
-        if status != fstar_ide::ResponseStatus::Success {
+        if status != fstar::ResponseStatus::Success {
             return None
         }
-        match serde_json::from_value::<fstar_ide::AutoCompleteResponse>(response) {
+        match serde_json::from_value::<fstar::AutoCompleteResponse>(response) {
             Ok(response) => {
                 Some(
                     response.into_iter()
-                        .map(|fstar_ide::AutoCompleteResponseItem(match_length, annotation, candidate)| CompleteResultItem {match_length, annotation, candidate})
+                        .map(|fstar::AutoCompleteResponseItem(match_length, annotation, candidate)| CompleteResultItem {match_length, annotation, candidate})
                         .filter(|cri| cri.annotation != "<search term>")
                         .collect()
                 )
@@ -547,11 +547,11 @@ impl DiagnosticsStateMachine {
     }
 
     #[tracing::instrument(skip(self))]
-    fn process_error(&mut self, ide_type: IdeType, error: fstar_ide::VerificationFailureResponseItem) {
+    fn process_error(&mut self, ide_type: IdeType, error: fstar::VerificationFailureResponseItem) {
         let severity = match error.level {
-            fstar_ide::VerificationFailureLevel::Error => DiagnosticSeverity::ERROR,
-            fstar_ide::VerificationFailureLevel::Warning => DiagnosticSeverity::WARNING,
-            fstar_ide::VerificationFailureLevel::Info => DiagnosticSeverity::INFORMATION,
+            fstar::VerificationFailureLevel::Error => DiagnosticSeverity::ERROR,
+            fstar::VerificationFailureLevel::Warning => DiagnosticSeverity::WARNING,
+            fstar::VerificationFailureLevel::Info => DiagnosticSeverity::INFORMATION,
         };
         let (range, message) = {
             let range0 = &error.ranges[0];
