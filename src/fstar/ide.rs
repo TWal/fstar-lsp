@@ -33,16 +33,10 @@ impl LastMessageDecider {
     fn decide(&self, resp_or_msg: &ResponseOrMessage) -> bool {
         match self {
             LastMessageDecider::Other => {
-                match resp_or_msg {
-                    ResponseOrMessage::Response(_) => true,
-                    _ => false,
-                }
+                matches!(resp_or_msg, ResponseOrMessage::Response(_))
             }
             LastMessageDecider::FullBuffer => {
-                match resp_or_msg {
-                    ResponseOrMessage::Message(Message::Progress(ProgressMessageOrNull::Some(ProgressMessage::FullBufferFinished))) => true,
-                    _ => false,
-                }
+                matches!(resp_or_msg, ResponseOrMessage::Message(Message::Progress(ProgressMessageOrNull::Some(ProgressMessage::FullBufferFinished))))
             }
         }
     }

@@ -27,24 +27,22 @@ fn find_config_file(path: &str) -> Option<(Config, std::path::PathBuf)> {
     let base_directory_path = std::path::Path::new(path).parent()?;
     for dir in base_directory_path.ancestors() {
         if let Ok(dir_content) = std::fs::read_dir(dir) {
-            for entry in dir_content {
-                if let Ok(entry) = entry {
-                    if let Some(file_name) = entry.file_name().to_str() {
-                        if file_name.ends_with(".fst.config.json") {
-                            match std::fs::read_to_string(entry.path()) {
-                                Err(e) => {
-                                    error!("Found config file {} but could not read it: {}", entry.path().display(), e);
-                                    return None
-                                },
-                                Ok(contents) => {
-                                    match serde_json::from_str::<Config>(&contents) {
-                                        Err(e) => {
-                                            error!("Found config file {} but could not parse it: {}", entry.path().display(), e);
-                                            return None;
-                                        }
-                                        Ok(config) => {
-                                            return Some((config, dir.to_path_buf()));
-                                        }
+            for entry in dir_content.flatten() {
+                if let Some(file_name) = entry.file_name().to_str() {
+                    if file_name.ends_with(".fst.config.json") {
+                        match std::fs::read_to_string(entry.path()) {
+                            Err(e) => {
+                                error!("Found config file {} but could not read it: {}", entry.path().display(), e);
+                                return None
+                            },
+                            Ok(contents) => {
+                                match serde_json::from_str::<Config>(&contents) {
+                                    Err(e) => {
+                                        error!("Found config file {} but could not parse it: {}", entry.path().display(), e);
+                                        return None;
+                                    }
+                                    Ok(config) => {
+                                        return Some((config, dir.to_path_buf()));
                                     }
                                 }
                             }
@@ -115,7 +113,7 @@ impl FileBackendInternal {
     }
 
     fn get_symbol_at(&self, pos: Position) -> Option<SymbolInfo> {
-        let line = self.text.lines().skip(pos.line as usize).next().unwrap();
+        let line = self.text.lines().nth(pos.line as usize).unwrap();
         let mut range = None;
         let mut range_start = None;
         for (i, c) in line.char_indices().chain(std::iter::repeat((line.len(), '\n')).take(1)) {
@@ -126,7 +124,7 @@ impl FileBackendInternal {
                     break;
                 }
             }
-            if range_start == None && c_is_ident_char {
+            if range_start.is_none() && c_is_ident_char {
                 range_start = Some(i)
             }
             if !c_is_ident_char {
@@ -512,7 +510,7 @@ impl FileBackend {
             }
             Err(err) => {
                 error!("couldn't parse response: {}", err);
-                return None
+                None
             }
         }
     }
