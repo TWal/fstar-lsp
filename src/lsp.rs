@@ -90,8 +90,8 @@ impl DiagnosticsStateMachine {
 
     async fn finish(&self, _ide_type: IdeType) {
         let all_diagnostics: Vec<Diagnostic> =
-            self.lax_diagnostics.clone().into_iter()
-            .chain(self.full_diagnostics.clone().into_iter())
+            self.full_diagnostics.clone().into_iter()
+            .chain(self.lax_diagnostics.clone().into_iter())
             .unique_by(|diag| (diag.range.start.line, diag.range.start.character, diag.range.end.line, diag.range.end.character, diag.message.clone())) // send a tuple to be able to hash
             .collect()
         ;
